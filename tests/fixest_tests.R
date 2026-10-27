@@ -3261,6 +3261,23 @@ m_cw_tru = suppressWarnings(fepois(Euros ~ log(dist_km) | Origin + Destination, 
 test(m_cw_tru$iterations > m_cw_fls$iterations, TRUE)
 
 
+# Multi-threaded taskloop demeaning with varying slopes (n_obs >= 20000)
+set.seed(123)
+n_tl = 25000
+df_tl = data.frame(
+  y   = rnorm(n_tl),
+  x   = rnorm(n_tl),
+  z   = rnorm(n_tl),
+  fe1 = sample(1:500, n_tl, replace = TRUE),
+  fe2 = sample(1:200, n_tl, replace = TRUE),
+  fe3 = sample(1:50,  n_tl, replace = TRUE)
+)
+est_tl_1 = feols(y ~ x | fe1[z] + fe2 + fe3, df_tl, nthreads = 1)
+est_tl_2 = feols(y ~ x | fe1[z] + fe2 + fe3, df_tl, nthreads = 2)
+test(coef(est_tl_1), coef(est_tl_2), "~", 1e-12)
+test(est_tl_1$iterations, est_tl_2$iterations)
+
+
 
 
 
