@@ -1985,6 +1985,13 @@ if(requireNamespace("data.table", quietly = TRUE)){
   test(coef(m_agg[[2]]), coef(m_ref[[2]]), "~", tol = 1e-12)
   test(se(m_agg[[2]]), se(m_ref[[2]]), "~", tol = 1e-12)
   test(sort(names(dt_base)), c("fe_ter", "species"))
+
+  dt_pois = data.table::as.data.table(base)
+  dt_pois[, y_pos := round( exp(x1 / 5) )]
+  m_pois_ref = fepois(y_pos ~ x2 + x3 | species, dt_pois)
+  m_pois_agg = fepois(y_pos ~ x2 + x3 | species, dt_pois, vcov = ~ species, mem.clean = "aggressive")
+  test(coef(m_pois_agg), coef(m_pois_ref), "~", tol = 1e-10)
+  test(names(dt_pois), "species")
 }
 
 #

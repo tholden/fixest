@@ -520,8 +520,10 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
   # 1st: is the call coming from feglm?
   fromGLM = FALSE
   skip_fixef = FALSE
+  mem.clean.aggressive = FALSE
   if("fromGLM" %in% names(dots)){
     fromGLM = TRUE
+    mem.clean = isTRUE(mem.clean)
     # env is provided by feglm
     X = dots$X
     y = as.vector(dots$y)
@@ -1830,11 +1832,11 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
     slope_flag = get("slope_flag", env)
     slope_vars = get("slope_variables", env)
 
-    in_place_single = lean && mem.clean && !fromGLM && !demeaned &&
+    in_place_single = !fromGLM && lean && mem.clean && !demeaned &&
       !isTRUE(dots$iv_call) && is.null(dots$resid_1st_stage) && !isTRUE(dots$add_fitted_demean)
-    if(in_place_single || (mem.clean.aggressive && !fromGLM && !IN_MULTI)){
+    if(in_place_single || (!fromGLM && mem.clean.aggressive && !IN_MULTI)){
       assign("linear.mat", NULL, env)
-      if(mem.clean.aggressive && !IN_MULTI){
+      if(!fromGLM && mem.clean.aggressive && !IN_MULTI){
         assign("lhs", NULL, env)
       }
     }
@@ -2648,6 +2650,8 @@ feglm.fit = function(y, X, fixef_df, family = "gaussian", vcov, offset, split,
     if(missing(warn)) warn = get("warn", env)
     if(missing(verbose)) verbose = get("verbose", env)
     if(missing(only.coef)) only.coef = get("only.coef", env)
+    if(missing(mem.clean)) mem.clean = get("mem.clean", env)
+    else mem.clean = isTRUE(mem.clean) || identical(mem.clean, "aggressive")
 
     # starting point of the fixed-effects
     if(!is.null(dots$means)) means = dots$means
@@ -2715,6 +2719,7 @@ feglm.fit = function(y, X, fixef_df, family = "gaussian", vcov, offset, split,
 
     # warn flag
     warn = get("warn", env)
+    mem.clean = get("mem.clean", env)
 
     # init
     init.type = get("init.type", env)
