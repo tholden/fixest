@@ -96,19 +96,22 @@ class simple_mat_with_id{
   simple_mat_with_id() = delete;
 
   double *px0;
-  int nrow, ncol, n_total;
+  int nrow, ncol;
+  int64_t n_total;
 
 public:
   simple_mat_with_id(double* px_in, int nrow_in):
-    px0(px_in), nrow(nrow_in), ncol(nrow_in), n_total(nrow * ncol) {};
+    px0(px_in), nrow(nrow_in), ncol(nrow_in),
+    n_total(static_cast<int64_t>(nrow_in) * nrow_in) {};
   simple_mat_with_id(double* px_in, int nrow_in, int ncol_in):
-    px0(px_in), nrow(nrow_in), ncol(ncol_in), n_total(nrow * ncol) {};
+    px0(px_in), nrow(nrow_in), ncol(ncol_in),
+    n_total(static_cast<int64_t>(nrow_in) * ncol_in) {};
   double& operator()(int id, int i, int j);
   double& operator()(int id, int i);
 };
 
 inline double& simple_mat_with_id::operator()(int id, int i, int j){
-  return px0[n_total * id + i + nrow * j];
+  return px0[n_total * id + i + static_cast<int64_t>(nrow) * j];
 }
 
 inline double& simple_mat_with_id::operator()(int id, int i){
@@ -146,7 +149,7 @@ class FEClass{
 
   int *nb_id_Q;
 
-  vector<int> coef_start_Q;
+  vector<int64_t> coef_start_Q;
 
   // internal functions
   void compute_fe_coef_internal(int, double *, bool, RealVec, double *, double *);
@@ -165,8 +168,8 @@ public:
     double operator()(int, int);
   };
 
-  int nb_coef_T;
-  vector<int> nb_coef_Q;
+  int64_t nb_coef_T;
+  vector<int64_t> nb_coef_Q;
 
   // constructor:
   FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id_Q, SEXP table_id_I, SEXP slope_flag_Q, SEXP slope_vars_list);
@@ -227,8 +230,8 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
   vector<bool> is_slope_fe_Q(Q, false);
   vector<int> nb_vs_Q(Q, 0);
   vector<int> nb_vs_noFE_Q(Q, 0);
-  vector<int> nb_coef_Q(Q);
-  int nb_coef_T = 0;
+  vector<int64_t> nb_coef_Q(Q);
+  int64_t nb_coef_T = 0;
 
   for(int q=0 ; q<Q ; ++q){
     //   0: no slope
@@ -249,7 +252,7 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
       }
 
       // There is n_vs coefficients (and not n_vs squared => this is only in the systems of eq)
-      nb_coef_Q[q] = nb_vs_Q[q] * nb_id_Q[q];
+      nb_coef_Q[q] = static_cast<int64_t>(nb_vs_Q[q]) * nb_id_Q[q];
     } else {
       nb_coef_Q[q] = nb_id_Q[q];
     }
@@ -258,7 +261,7 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
   }
 
   // where to start the coefficients
-  vector<int> coef_start_Q(Q, 0);
+  vector<int64_t> coef_start_Q(Q, 0);
   for(int q=1 ; q<Q ; ++q) coef_start_Q[q] = coef_start_Q[q - 1] + nb_coef_Q[q - 1];
 
   // Copying (tiny objects)
@@ -284,7 +287,7 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
   // First the non slope coefficients
   // We create the sum of weights
 
-  int nb_coef_noVS_T = 0;
+  int64_t nb_coef_noVS_T = 0;
   for(int q=0; q<Q ; ++q){
     if(is_slope_fe_Q[q] == false){
       nb_coef_noVS_T += nb_id_Q[q];
@@ -333,7 +336,7 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
 
   if(is_weight && nb_coef_noVS_T > 0){
     // Checking the 0-weights => we set them to 1 to wavoid division by 0
-    for(int c=0 ; c<nb_coef_noVS_T ; ++c){
+    for(int64_t c=0 ; c<nb_coef_noVS_T ; ++c){
       if(sum_weights_noVS_C[c] == 0){
         sum_weights_noVS_C[c] = 1;
       }
@@ -354,9 +357,9 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
 
     // B) Computing the coefficients of the systems of equations
 
-    int nb_vs_coef_T = 0;
+    int64_t nb_vs_coef_T = 0;
     for(int q=0 ; q<Q ; ++q){
-      nb_vs_coef_T += nb_vs_Q[q] * nb_vs_Q[q] * nb_id_Q[q];
+      nb_vs_coef_T += static_cast<int64_t>(nb_vs_Q[q]) * nb_vs_Q[q] * nb_id_Q[q];
     }
 
     // The sys of eqs, all coefs to 0
@@ -366,7 +369,7 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
     p_eq_systems_VS_C.resize(Q);
     p_eq_systems_VS_C[0] = eq_systems_VS_C.data();
     for(int q=1 ; q<Q ; ++q){
-      p_eq_systems_VS_C[q] = p_eq_systems_VS_C[q - 1] + nb_vs_Q[q - 1] * nb_vs_Q[q - 1] * nb_id_Q[q - 1];
+      p_eq_systems_VS_C[q] = p_eq_systems_VS_C[q - 1] + static_cast<int64_t>(nb_vs_Q[q - 1]) * nb_vs_Q[q - 1] * nb_id_Q[q - 1];
     }
 
     for(int q=0 ; q<Q ; ++q){
@@ -480,7 +483,7 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
 
   int V = nb_vs_Q[q];
   int *my_fe = p_fe_id[q];
-  int nb_coef = nb_coef_Q[q];
+  int64_t nb_coef = nb_coef_Q[q];
   int nb_id = nb_id_Q[q];
   const bool is_weight = this->is_weight;
   const double *const p_weights = this->p_weights;
@@ -506,7 +509,7 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
       const double *sum_in_out = in_out_C + coef_start_Q[q];
 
       // initialize cluster coef
-      for(int m=0 ; m<nb_coef ; ++m){
+      for(int64_t m=0 ; m<nb_coef ; ++m){
         my_fe_coef[m] = sum_in_out[m];
       }
 
@@ -517,7 +520,7 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
 
     }
     
-    for(int m=0 ; m<nb_coef ; ++m){
+    for(int64_t m=0 ; m<nb_coef ; ++m){
       my_fe_coef[m] /= my_SW[m];
     }
 
@@ -545,7 +548,7 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
 
       // initialization
       const double *sum_in_out = in_out_C + coef_start_Q[q];
-      for(int m=0 ; m<nb_coef ; ++m){
+      for(int64_t m=0 ; m<nb_coef ; ++m){
         my_fe_coef[m] = sum_in_out[m];
       }
 
@@ -624,7 +627,7 @@ void FEClass::compute_fe_coef_2_internal(double *fe_coef_in_out_C, double *fe_co
   int *my_fe_a = p_fe_id[index_a];
   int *my_fe_b = p_fe_id[index_b];
 
-  int nb_coef_b = nb_coef_Q[index_b];
+  int64_t nb_coef_b = nb_coef_Q[index_b];
 
   int nb_id_b = nb_id_Q[index_b];
 
@@ -642,7 +645,7 @@ void FEClass::compute_fe_coef_2_internal(double *fe_coef_in_out_C, double *fe_co
 
 
   // initialize cluster coef
-  for(int m=0 ; m<nb_coef_b ; ++m){
+  for(int64_t m=0 ; m<nb_coef_b ; ++m){
     my_fe_coef_b[m] = my_in_out_b[m];
   }
 
@@ -666,7 +669,7 @@ void FEClass::compute_fe_coef_2_internal(double *fe_coef_in_out_C, double *fe_co
     }
 
     double *my_SW = p_sum_weights_noVS_C[index_b];
-    for(int m=0 ; m<nb_coef_b ; ++m){
+    for(int64_t m=0 ; m<nb_coef_b ; ++m){
       my_fe_coef_b[m] /= my_SW[m];
     }
 
@@ -919,9 +922,9 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
   ssq = 0;
 
   if(!is_slope){
-    int n_max = 0;
+    int64_t n_max = 0;
     for(int q=0 ; q<Q_max ; ++q) n_max += nb_coef_Q[q];
-    for(int i=0 ; i<n_max ; ++i){
+    for(int64_t i=0 ; i<n_max ; ++i){
       double delta2_X_tmp = delta2_X[i];
       vprod += delta_GX[i] * delta2_X_tmp;
       ssq += delta2_X_tmp * delta2_X_tmp;
@@ -930,10 +933,10 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
   }
 
   for(int q=0 ; q<Q_max ; ++q){
-    int start = coef_start_Q[q];
+    int64_t start = coef_start_Q[q];
     if(is_slope_Q[q] == false){
-      int n_coef = nb_coef_Q[q];
-      for(int m=0 ; m<n_coef ; ++m){
+      int64_t n_coef = nb_coef_Q[q];
+      for(int64_t m=0 ; m<n_coef ; ++m){
         double delta2_X_tmp = delta2_X[start + m];
         vprod += delta_GX[start + m] * delta2_X_tmp;
         ssq += delta2_X_tmp * delta2_X_tmp;
@@ -947,8 +950,8 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
       for(int c=0 ; c<nb_id ; ++c){
         double w_c = is_slope_fe_Q[q] ? my_system(c, V - 1, V - 1) : my_SW[c];
         if(w_c <= 0) w_c = 1.0;
-        const double *dgx_c = delta_GX.data() + start + c * V;
-        const double *d2x_c = delta2_X.data() + start + c * V;
+        const double *dgx_c = delta_GX.data() + start + static_cast<int64_t>(c) * V;
+        const double *d2x_c = delta2_X.data() + start + static_cast<int64_t>(c) * V;
 
         for(int v=0 ; v<V ; ++v){
           double d_cv = my_system(c, v, v);
@@ -982,7 +985,7 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
 struct PARAM_DEMEAN{
   int n_obs;
   int Q;
-  int nb_coef_T;
+  int64_t nb_coef_T;
   int iterMax;
   double diffMax;
   
@@ -1012,12 +1015,12 @@ struct PARAM_DEMEAN{
 
 
 
-bool dm_update_X_IronsTuck(int Q_max, const FEClass &FE_info, int nb_coef_no_Q, vector<double> &X,
+bool dm_update_X_IronsTuck(int Q_max, const FEClass &FE_info, int64_t nb_coef_no_Q, vector<double> &X,
                            const vector<double> &GX, const vector<double> &GGX,
                            vector<double> &delta_GX, vector<double> &delta2_X){
 
   #pragma omp taskloop num_tasks(4 * omp_get_num_threads()) default(shared) if(nb_coef_no_Q >= 20000)
-  for(int i=0 ; i<nb_coef_no_Q ; ++i){
+  for(int64_t i=0 ; i<nb_coef_no_Q ; ++i){
     double GX_tmp = GX[i];
     delta_GX[i] = GGX[i] - GX_tmp;
     delta2_X[i] = delta_GX[i] - GX_tmp + X[i];
@@ -1035,7 +1038,7 @@ bool dm_update_X_IronsTuck(int Q_max, const FEClass &FE_info, int nb_coef_no_Q, 
 
     // update of X:
     #pragma omp taskloop num_tasks(4 * omp_get_num_threads()) default(shared) if(nb_coef_no_Q >= 20000)
-    for(int i=0 ; i<nb_coef_no_Q ; ++i){
+    for(int64_t i=0 ; i<nb_coef_no_Q ; ++i){
       X[i] = GGX[i] - coef * delta_GX[i];
     }
   }
@@ -1118,7 +1121,7 @@ void demean_single_1(int v, PARAM_DEMEAN* args){
   // Q == 1: nothing to say, just compute the closed form
 
   // loading the data
-  int nb_coef_T = args->nb_coef_T;
+  int64_t nb_coef_T = args->nb_coef_T;
 
   vector<RealVec> &p_input = args->p_input;
   vector<double*> &p_output = args->p_output;
@@ -1152,7 +1155,7 @@ void demean_single_1(int v, PARAM_DEMEAN* args){
   // saving the fixef coefs
   double *fixef_values = args->fixef_values;
   if(args->save_fixef){
-    for(int m=0 ; m<nb_coef_T ; ++m){
+    for(int64_t m=0 ; m<nb_coef_T ; ++m){
       fixef_values[m] = fe_coef[m];
     }
   }
@@ -1175,11 +1178,11 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
   const int iter_grandAcc = args->algo_iter_grandAcc;
 
   int n_obs = args->n_obs;
-  int nb_coef_T = args->nb_coef_T;
+  int64_t nb_coef_T = args->nb_coef_T;
   int Q = args->Q;
   double diffMax = args->diffMax;
   
-  int nb_coef_all = nb_coef_T;
+  int64_t nb_coef_all = nb_coef_T;
   const bool two_fe_algo = two_fe || Q == 2;
   if(two_fe_algo){
     Q = 2;
@@ -1198,7 +1201,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
   double *output = p_output[v];
 
   // temp var:
-  int size_other_means = two_fe_algo ? FE_info.nb_coef_Q[1] : n_obs;
+  int64_t size_other_means = two_fe_algo ? FE_info.nb_coef_Q[1] : static_cast<int64_t>(n_obs);
   vector<double> sum_other_means_or_second_coef(size_other_means);
   double *p_sum_other_means = sum_other_means_or_second_coef.data();
 
@@ -1236,7 +1239,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
   double *p_GGX = GGX.data();
 
   // variables on 1:(Q-1)
-  int nb_coef_no_Q = 0;
+  int64_t nb_coef_no_Q = 0;
   for(int q = 0 ; q<(Q-1) ; ++q){
     nb_coef_no_Q += FE_info.nb_coef_Q[q];
   }
@@ -1263,7 +1266,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
 
   // check whether we should go into the loop
   bool keepGoing = false;
-  for(int i=0 ; i<nb_coef_T ; ++i){
+  for(int64_t i=0 ; i<nb_coef_T ; ++i){
     if(continue_crit(X[i], GX[i], diffMax)){
       keepGoing = true;
       break;
@@ -1311,7 +1314,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
     compute_fe(Q, p_X, p_GX, p_sum_other_means, p_sum_in_out, args);
 
     keepGoing = false;
-    for(int i=0 ; i<nb_coef_no_Q ; ++i){
+    for(int64_t i=0 ; i<nb_coef_no_Q ; ++i){
       if(continue_crit(X[i], GX[i], diffMax)){
         keepGoing = true;
         break;
@@ -1391,15 +1394,15 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
   // saving the fixef coefs
   double *fixef_values = args->fixef_values;
   if(args->save_fixef){
-    for(int m=0 ; m<nb_coef_T ; ++m){
+    for(int64_t m=0 ; m<nb_coef_T ; ++m){
       fixef_values[m] += GX[m];
     }
     
     if(two_fe_algo){
       // we add the other coefficients
-      int n_coefs_FE1 = nb_coef_T;
-      int n_coefs_FE2 = size_other_means;
-      for(int m=0 ; m<n_coefs_FE2; ++m){
+      int64_t n_coefs_FE1 = nb_coef_T;
+      int64_t n_coefs_FE2 = size_other_means;
+      for(int64_t m=0 ; m<n_coefs_FE2; ++m){
         fixef_values[n_coefs_FE1 + m] += p_beta_final[m];
       }
     }
@@ -1521,7 +1524,7 @@ List cpp_demean(SEXP y, SEXP X_raw, SEXP r_weights, int iterMax, double diffMax,
   // Creating the object containing all information on the FEs
   FEClass FE_info(n_obs, Q, r_weights, fe_id_list, r_nb_id_Q, table_id_I, slope_flag_Q, 
                   slope_vars_list);
-  int nb_coef_T = FE_info.nb_coef_T;
+  int64_t nb_coef_T = FE_info.nb_coef_T;
 
   // output vector: (Note that if the means are provided, we use that vector and will modify it in place)
   int64_t n_total = static_cast<int64_t>(n_obs) * n_vars;
