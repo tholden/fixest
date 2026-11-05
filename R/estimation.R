@@ -1203,6 +1203,10 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
 
 
             res[[index_2D_to_1D(i_lhs, jj, n_rhs)]] = my_res
+            if(mem.clean){
+              rm(my_res)
+              gc()
+            }
           }
         }
 
@@ -2213,6 +2217,10 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
 
     res = summary(res, vcov = vcov, agg = agg, ssc = ssc, lean = lean, 
                   summary_flags = summary_flags, nthreads = nthreads)
+
+    if(lean && mem.clean){
+      gc()
+    }
 
     if(isTRUE(dots$iv_call) && lean){
       res$residuals = r
@@ -3422,6 +3430,10 @@ feglm.fit = function(y, X, fixef_df, family = "gaussian", vcov, offset, split,
 
     res = summary(res, vcov = vcov, agg = agg, ssc = ssc, lean = lean, 
                   summary_flags = summary_flags, nthreads = nthreads)
+
+    if(lean && mem.clean){
+      gc()
+    }
   }
 
   return(res)
