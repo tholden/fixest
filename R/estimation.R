@@ -618,6 +618,7 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
     correct_0w = FALSE
 
     mem.clean = get("mem.clean", env)
+    mem.clean.aggressive = isTRUE(mget("mem.clean.aggressive", env, ifnotfound = list(FALSE))[[1]])
 
     lean = get("lean", env)
 
@@ -1087,9 +1088,6 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
 
           X_demean = vars_demean$X_demean
           y_demean = vars_demean$y_demean
-          if(mem.clean && !do_iv){
-            rm(X_all)
-          }
 
           if(do_iv){
             
@@ -1834,8 +1832,11 @@ feols = function(fml, data, vcov, weights, offset, subset, split, fsplit, split.
 
     in_place_single = lean && mem.clean && !fromGLM && !demeaned &&
       !isTRUE(dots$iv_call) && is.null(dots$resid_1st_stage) && !isTRUE(dots$add_fitted_demean)
-    if(in_place_single){
+    if(in_place_single || (mem.clean.aggressive && !fromGLM && !IN_MULTI)){
       assign("linear.mat", NULL, env)
+      if(mem.clean.aggressive && !IN_MULTI){
+        assign("lhs", NULL, env)
+      }
     }
 
     if(mem.clean){
@@ -3913,10 +3914,12 @@ fepois = function(fml, data, vcov, offset, weights, subset, split, fsplit,
 #' otherwise.
 #' @param only.env (Advanced users.) Logical scalar, default is `FALSE`. If `TRUE`, then only 
 #' the environment used to make the estimation is returned.
-#' @param mem.clean Logical scalar, default is `FALSE`. Only to be used if the data set is 
+#' @param mem.clean Logical scalar or `"aggressive"`, default is `FALSE`. Only to be used if the data set is 
 #' large compared to the available RAM. If `TRUE` then intermediary objects are removed as 
 #' much as possible and [`gc`] is run before each substantial C++ section in the internal 
-#' code to avoid memory issues.
+#' code to avoid memory issues. If `"aggressive"` and `data` is a `data.table` (with `data.save = FALSE`), 
+#' columns in `data` that are no longer needed after model setup (i.e. all columns except cluster/VCOV variables) 
+#' are dropped in-place from the `data.table` via `data.table::set(data, j = ..., value = NULL)` before demeaning.
 #' @param lean Logical scalar, default is `FALSE`. If `TRUE` then all large objects are removed 
 #' from the returned result: this will save memory but will block the possibility to 
 #' use many methods. It is recommended to use the arguments `se` or `cluster` to 
