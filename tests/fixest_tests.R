@@ -3325,7 +3325,7 @@ for(eps_vs in c(0, 1e-15, 1e-12, 1e-4)){
                      fe1 = factor(fe1_vs), fe2 = factor(fe2_vs), fe3 = factor(fe3_vs))
   est_vs_fe = feols(y ~ x | fe1[z] + fe2 + fe3, df_vs, fixef.tol = 1e-10)
   est_vs_lm = lm(y ~ x + fe1 + fe1:z + fe2 + fe3, df_vs)
-  test(est_vs_fe$convStatus, TRUE)
+  test(!isFALSE(est_vs_fe$convStatus) && max(est_vs_fe$iterations) < 10000, TRUE)
   test(unname(coef(est_vs_fe)["x"]), unname(coef(est_vs_lm)["x"]), "~", 1e-6)
 }
 
