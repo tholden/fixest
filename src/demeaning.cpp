@@ -504,7 +504,6 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
   const double *const p_weights = this->p_weights;
 
   double *my_fe_coef = fe_coef_C + coef_start_Q[q];
-  const bool use_par_obs = parallel_obs && n_obs >= 65536 && nb_id >= 65536;
 
   if(is_slope_Q[q] == false){
 
@@ -687,15 +686,6 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
           rhs(c, v1) -= my_system(c, v1, v) * rhs(c, v);
         }
       }
-    } else {
-      #pragma omp taskloop num_tasks(omp_num_tasks(nb_id, 16384)) default(shared) if(nb_id >= 16384)
-      for(int c=0 ; c<nb_id ; ++c){
-        for(int v=0 ; v<V ; ++v){
-          for(int v1=v + 1 ; v1<V ; ++v1){
-            // -= row_coef * value from the v row
-            rhs(c, v1) -= my_system(c, v1, v) * rhs(c, v);
-          }
-        }
 
       // We backward solve
       for(int v=0 ; v<V ; ++v){
@@ -706,6 +696,7 @@ void FEClass::compute_fe_coef_internal(int q, double *fe_coef_C, bool is_single,
           for(int v_done=0 ; v_done<v ; ++v_done){
             val -= rhs(c, v_done) * my_system(c, v, v_done);
           }
+          rhs(c, v) = val / my_system(c, v, v);
         }
       }
     }
@@ -1335,8 +1326,6 @@ struct PARAM_DEMEAN{
   // stopflag
   bool *stopnow;
   int *jobdone;
-  int nthreads = 1;
-  int *active_vars = nullptr;
 };
 
 
@@ -1403,8 +1392,6 @@ void compute_fe_gnl(double *p_fe_coef_origin, double *p_fe_coef_destination,
   }
 
   // We update each cluster coefficient, starting from Q (the smallest one)
-  int n_active = (args->active_vars != nullptr) ? *(args->active_vars) : args->nthreads;
-  bool parallel_obs = (args->nthreads > 1) && (n_active * 4 <= args->nthreads);
 
   for(int q=Q-1 ; q>=0 ; q--){
     
