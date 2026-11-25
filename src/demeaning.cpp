@@ -143,6 +143,15 @@ class FEClass{
   vector<double> sum_weights_noVS_C;
   vector<double*> p_sum_weights_noVS_C;
 
+  // Per-cluster observation counts and relative mean weights ((W_c / n_c) / mean_weight)
+  // (cluster_rel_* populated only when is_weight == true; identically 1.0 when weights are constant, 0.0 for zero-weight clusters)
+  vector<int*> p_table_id_I;
+  double mean_weight = 1.0;
+  vector<double> cluster_rel_w_I;
+  vector<double*> p_cluster_rel_w_I;
+  vector<double> cluster_rel_sqrtw_I;
+  vector<double*> p_cluster_rel_sqrtw_I;
+
   // p_fe_id: pointers to the fe_id vectors
   // p_vs_vars: pointers to the VS variables
   // p_weights: pointer to the weight vector
@@ -193,8 +202,8 @@ public:
   void add_fe_coef_to_mu(int q, double *fe_coef_C, double *out_N);
   void add_all_fe_coef_to_mu(double *fe_coef_C, double *out_N);
   void compute_sum_other_means(int q, double *fe_coef_origin, double *fe_coef_destination, double *out_N);
-  double compute_ssr(double *fe_coef_C, RealVec &in_N);
-  double compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *in_out_C, RealVec &in_N);
+  double compute_ssr(double *fe_coef_C, RealVec &in_N, const double *out_N);
+  double compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *in_out_C, RealVec &in_N, const double *out_N);
 
   void compute_fe_coef_2(double *fe_coef_in_C, double *fe_coef_out_C, double *fe_coef_tmp, double *in_out_C);
 
@@ -202,6 +211,7 @@ public:
 
   void compute_in_out(int q, double *in_out_C, RealVec &in_N, double *out_N);
 
+  bool check_continue(int Q_max, const vector<double> &X, const vector<double> &GX, double diffMax) const;
   void compute_IronsTuck_inner_products(int Q_max, const vector<double> &delta_GX, const vector<double> &delta2_X, double &vprod, double &ssq) const;
 };
 
@@ -319,10 +329,12 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
   }
 
   // table is already computed
-  vector<int*> p_table_id_I(Q);
-  p_table_id_I[0] = INTEGER(table_id_I);
-  for(int q=1 ; q<Q ; ++q){
-    p_table_id_I[q] = p_table_id_I[q - 1] + nb_id_Q[q - 1];
+  p_table_id_I.resize(Q);
+  if(Q > 0){
+    p_table_id_I[0] = INTEGER(table_id_I);
+    for(int q=1 ; q<Q ; ++q){
+      p_table_id_I[q] = p_table_id_I[q - 1] + nb_id_Q[q - 1];
+    }
   }
 
 
@@ -357,6 +369,53 @@ FEClass::FEClass(int n_obs, int Q, SEXP r_weights, SEXP fe_id_list, SEXP r_nb_id
       }
     }
 
+  }
+
+  if(is_weight){
+    double total_w = 0.0;
+    for(int obs=0 ; obs<n_obs ; ++obs){
+      total_w += p_weights[obs];
+    }
+    mean_weight = (n_obs > 0 && total_w > 0.0) ? (total_w / static_cast<double>(n_obs)) : 1.0;
+
+    int64_t nb_id_T = 0;
+    for(int q=0 ; q<Q ; ++q){
+      nb_id_T += nb_id_Q[q];
+    }
+    cluster_rel_w_I.assign(nb_id_T > 0 ? nb_id_T : 1, 0.0);
+    cluster_rel_sqrtw_I.assign(nb_id_T > 0 ? nb_id_T : 1, 0.0);
+    p_cluster_rel_w_I.resize(Q);
+    p_cluster_rel_sqrtw_I.resize(Q);
+    if(Q > 0){
+      p_cluster_rel_w_I[0] = cluster_rel_w_I.data();
+      p_cluster_rel_sqrtw_I[0] = cluster_rel_sqrtw_I.data();
+      for(int q=1 ; q<Q ; ++q){
+        p_cluster_rel_w_I[q] = p_cluster_rel_w_I[q - 1] + nb_id_Q[q - 1];
+        p_cluster_rel_sqrtw_I[q] = p_cluster_rel_sqrtw_I[q - 1] + nb_id_Q[q - 1];
+      }
+    }
+
+    const double inv_mean_w = 1.0 / mean_weight;
+    for(int q=0 ; q<Q ; ++q){
+      double *my_rw = p_cluster_rel_w_I[q];
+      double *my_sr = p_cluster_rel_sqrtw_I[q];
+      int *my_fe = p_fe_id[q];
+      int *my_table = p_table_id_I[q];
+      int nb_id = nb_id_Q[q];
+      for(int obs=0 ; obs<n_obs ; ++obs){
+        my_rw[my_fe[obs] - 1] += p_weights[obs];
+      }
+      for(int c=0 ; c<nb_id ; ++c){
+        if(my_rw[c] > 0.0 && my_table[c] > 0){
+          double rel_w = (my_rw[c] / static_cast<double>(my_table[c])) * inv_mean_w;
+          my_rw[c] = rel_w;
+          my_sr[c] = std::sqrt(rel_w);
+        } else {
+          my_rw[c] = 0.0;
+          my_sr[c] = 0.0;
+        }
+      }
+    }
   }
 
   // Then the slopes
@@ -1000,9 +1059,9 @@ void FEClass::add_all_fe_coef_to_mu(double *fe_coef_C, double *out_N){
   }
 }
 
-double FEClass::compute_ssr(double *fe_coef_C, RealVec &in_N){
-  // Computes sum_{i=0}^{n_obs-1} (in_N[i] - sum_q FE_q(i))^2 in a single fused taskloop
-  // without allocating a temporary n_obs vector (saves 4.3 GB VirtualAlloc/VirtualFree per check).
+double FEClass::compute_ssr(double *fe_coef_C, RealVec &in_N, const double *out_N){
+  // Computes (weight-aware) sum_{i=0}^{n_obs-1} w_rel_i * (in_N[i] - out_N[i] - sum_q FE_q(i))^2
+  // in a single fused taskloop without allocating a temporary n_obs vector.
   vector<double*> my_fe_coef_Q(Q);
   vector<simple_mat_of_vs_vars> vs_mat_Q;
   vs_mat_Q.reserve(Q);
@@ -1014,6 +1073,9 @@ double FEClass::compute_ssr(double *fe_coef_C, RealVec &in_N){
     vs_mat_Q.emplace_back(this, q);
     vs_coef_Q.emplace_back(my_fe_coef_Q[q], is_slope_Q[q] ? nb_vs_Q[q] : 1, 1);
   }
+
+  const bool use_w = is_weight;
+  const double inv_mean_w = use_w ? (1.0 / mean_weight) : 1.0;
 
   int n_tasks = omp_num_tasks(n_obs);
   vector<double> chunk_ssr(n_tasks, 0.0);
@@ -1038,8 +1100,12 @@ double FEClass::compute_ssr(double *fe_coef_C, RealVec &in_N){
           }
         }
       }
-      double resid = in_N[i] - mu_i;
-      local_ssr += resid * resid;
+      double resid = in_N[i] - out_N[i] - mu_i;
+      if(use_w){
+        local_ssr += (p_weights[i] * inv_mean_w) * resid * resid;
+      } else {
+        local_ssr += resid * resid;
+      }
     }
     chunk_ssr[t] = local_ssr;
   }
@@ -1051,7 +1117,7 @@ double FEClass::compute_ssr(double *fe_coef_C, RealVec &in_N){
   return ssr;
 }
 
-double FEClass::compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *in_out_C, RealVec &in_N){
+double FEClass::compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *in_out_C, RealVec &in_N, const double *out_N){
   compute_fe_coef_2_internal(fe_coef_a, fe_coef_b, in_out_C, false);
 
   simple_mat_of_vs_vars VS_mat_0(this, 0);
@@ -1064,6 +1130,8 @@ double FEClass::compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *i
   bool is_slope_1 = is_slope_Q[1];
   int V_0 = nb_vs_Q[0];
   int V_1 = nb_vs_Q[1];
+  const bool use_w = is_weight;
+  const double inv_mean_w = use_w ? (1.0 / mean_weight) : 1.0;
 
   int n_tasks = omp_num_tasks(n_obs);
   vector<double> chunk_ssr(n_tasks, 0.0);
@@ -1085,8 +1153,12 @@ double FEClass::compute_2_fe_ssr(double *fe_coef_a, double *fe_coef_b, double *i
       } else {
         mu_i += fe_coef_b[my_fe_1[i] - 1];
       }
-      double resid = in_N[i] - mu_i;
-      local_ssr += resid * resid;
+      double resid = in_N[i] - out_N[i] - mu_i;
+      if(use_w){
+        local_ssr += (p_weights[i] * inv_mean_w) * resid * resid;
+      } else {
+        local_ssr += resid * resid;
+      }
     }
     chunk_ssr[t] = local_ssr;
   }
@@ -1215,13 +1287,69 @@ inline double FEClass::simple_mat_of_vs_vars::operator()(int i, int k){
   return pvars[k][i];
 }
 
+bool FEClass::check_continue(int Q_max, const vector<double> &X, const vector<double> &GX, double diffMax) const {
+  if(!is_weight){
+    int64_t n_max = 0;
+    for(int q=0 ; q<Q_max ; ++q) n_max += nb_coef_Q[q];
+    for(int64_t i=0 ; i<n_max ; ++i){
+      if(continue_crit(X[i], GX[i], diffMax)){
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const double inv_mean_w = 1.0 / mean_weight;
+  for(int q=0 ; q<Q_max ; ++q){
+    int64_t start = coef_start_Q[q];
+    const double *my_sr = p_cluster_rel_sqrtw_I[q];
+    int nb_id = nb_id_Q[q];
+    if(is_slope_Q[q] == false){
+      for(int c=0 ; c<nb_id ; ++c){
+        double sc = my_sr[c];
+        if(sc == 0.0) continue;
+        int64_t idx = start + c;
+        if(continue_crit(sc * X[idx], sc * GX[idx], diffMax)){
+          return true;
+        }
+      }
+    } else {
+      int V = nb_vs_Q[q];
+      simple_mat_with_id my_system(p_eq_systems_VS_C[q], V);
+      const int *my_table = p_table_id_I[q];
+      for(int c=0 ; c<nb_id ; ++c){
+        if(my_sr[c] == 0.0 || my_table[c] <= 0) continue;
+        const double inv_nc_mean_w = inv_mean_w / static_cast<double>(my_table[c]);
+        const double *x_c  = X.data()  + start + static_cast<int64_t>(c) * V;
+        const double *gx_c = GX.data() + start + static_cast<int64_t>(c) * V;
+        for(int v=0 ; v<V ; ++v){
+          double d_cv = my_system(c, v, v);
+          if(d_cv <= 0.0) continue;
+          double u_x  = x_c[v];
+          double u_gx = gx_c[v];
+          for(int u=0 ; u<v ; ++u){
+            double mult = my_system(c, u, v);
+            u_x  += mult * x_c[u];
+            u_gx += mult * gx_c[u];
+          }
+          double sc_v = std::sqrt(d_cv * inv_nc_mean_w);
+          if(continue_crit(sc_v * u_x, sc_v * u_gx, diffMax)){
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &delta_GX,
                                                const vector<double> &delta2_X,
                                                double &vprod, double &ssq) const {
   vprod = 0;
   ssq = 0;
 
-  if(!is_slope){
+  if(!is_slope && !is_weight){
     int64_t n_max = 0;
     for(int q=0 ; q<Q_max ; ++q) n_max += nb_coef_Q[q];
     double vp_tmp = 0, ssq_tmp = 0;
@@ -1236,16 +1364,30 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
     return;
   }
 
+  const double inv_mean_w = is_weight ? (1.0 / mean_weight) : 1.0;
+
   for(int q=0 ; q<Q_max ; ++q){
     int64_t start = coef_start_Q[q];
     if(is_slope_Q[q] == false){
       int64_t n_coef = nb_coef_Q[q];
       double vp_tmp = 0, ssq_tmp = 0;
-      #pragma omp taskloop reduction(+:vp_tmp, ssq_tmp) num_tasks(omp_num_tasks(n_coef)) default(shared) if(n_coef >= 32768)
-      for(int64_t m=0 ; m<n_coef ; ++m){
-        double delta2_X_tmp = delta2_X[start + m];
-        vp_tmp += delta_GX[start + m] * delta2_X_tmp;
-        ssq_tmp += delta2_X_tmp * delta2_X_tmp;
+      if(!is_weight){
+        #pragma omp taskloop reduction(+:vp_tmp, ssq_tmp) num_tasks(omp_num_tasks(n_coef)) default(shared) if(n_coef >= 32768)
+        for(int64_t m=0 ; m<n_coef ; ++m){
+          double delta2_X_tmp = delta2_X[start + m];
+          vp_tmp += delta_GX[start + m] * delta2_X_tmp;
+          ssq_tmp += delta2_X_tmp * delta2_X_tmp;
+        }
+      } else {
+        const double *my_rw = p_cluster_rel_w_I[q];
+        #pragma omp taskloop reduction(+:vp_tmp, ssq_tmp) num_tasks(omp_num_tasks(n_coef)) default(shared) if(n_coef >= 32768)
+        for(int64_t m=0 ; m<n_coef ; ++m){
+          double w_c = my_rw[m];
+          if(w_c <= 0.0) continue;
+          double delta2_X_tmp = delta2_X[start + m];
+          vp_tmp += w_c * delta_GX[start + m] * delta2_X_tmp;
+          ssq_tmp += w_c * delta2_X_tmp * delta2_X_tmp;
+        }
       }
       vprod += vp_tmp;
       ssq += ssq_tmp;
@@ -1254,12 +1396,21 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
       int nb_id = nb_id_Q[q];
       simple_mat_with_id my_system(p_eq_systems_VS_C[q], V);
       const double *my_SW = is_slope_fe_Q[q] ? nullptr : p_sum_weights_noVS_C[q];
+      const double *my_rw = is_weight ? p_cluster_rel_w_I[q] : nullptr;
+      const int *my_table = p_table_id_I[q];
       double vp_tmp = 0, ssq_tmp = 0;
 
       #pragma omp taskloop reduction(+:vp_tmp, ssq_tmp) num_tasks(omp_num_tasks(nb_id, 16384)) default(shared) if(nb_id >= 16384)
       for(int c=0 ; c<nb_id ; ++c){
-        double w_c = is_slope_fe_Q[q] ? my_system(c, V - 1, V - 1) : my_SW[c];
-        if(w_c <= 0) w_c = 1.0;
+        double inv_denom = 1.0;
+        if(is_weight){
+          if(my_rw[c] <= 0.0 || my_table[c] <= 0) continue;
+          inv_denom = inv_mean_w / static_cast<double>(my_table[c]);
+        } else {
+          double w_c = is_slope_fe_Q[q] ? my_system(c, V - 1, V - 1) : my_SW[c];
+          if(w_c <= 0) w_c = 1.0;
+          inv_denom = 1.0 / w_c;
+        }
         const double *dgx_c = delta_GX.data() + start + static_cast<int64_t>(c) * V;
         const double *d2x_c = delta2_X.data() + start + static_cast<int64_t>(c) * V;
 
@@ -1273,7 +1424,7 @@ void FEClass::compute_IronsTuck_inner_products(int Q_max, const vector<double> &
               u_dgx += mult * dgx_c[u];
               u_d2x += mult * d2x_c[u];
             }
-            double w_scale = d_cv / w_c;
+            double w_scale = d_cv * inv_denom;
             vp_tmp += w_scale * u_dgx * u_d2x;
             ssq_tmp += w_scale * u_d2x * u_d2x;
           }
@@ -1572,13 +1723,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
   compute_fe(Q, p_X, p_GX, p_sum_other_means, p_sum_in_out, args);
 
   // check whether we should go into the loop
-  bool keepGoing = false;
-  for(int64_t i=0 ; i<nb_coef_T ; ++i){
-    if(continue_crit(X[i], GX[i], diffMax)){
-      keepGoing = true;
-      break;
-    }
-  }
+  bool keepGoing = FE_info.check_continue(two_fe_algo ? 1 : Q, X, GX, diffMax);
 
   // For the stopping criterion on total addition
   double ssr = 0;
@@ -1620,13 +1765,7 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
     // origin: X, destination: GX
     compute_fe(Q, p_X, p_GX, p_sum_other_means, p_sum_in_out, args);
 
-    keepGoing = false;
-    for(int64_t i=0 ; i<nb_coef_no_Q ; ++i){
-      if(continue_crit(X[i], GX[i], diffMax)){
-        keepGoing = true;
-        break;
-      }
-    }
+    keepGoing = FE_info.check_continue(Q - 1, X, GX, diffMax);
     
     if(iter % iter_grandAcc == 0){
       ++grand_acc;
@@ -1647,11 +1786,11 @@ bool demean_acc_gnl(int v, int iterMax, PARAM_DEMEAN *args, bool two_fe = false)
     if(iter % 40 == 0){
       double ssr_old = ssr;
 
-      // we compute the new SSR without allocating a temporary n_obs vector
+      // we compute the new (weight-aware) SSR on the true current residual (input - output - mu) without allocating a temporary n_obs vector
       if(two_fe_algo){
-        ssr = FE_info.compute_2_fe_ssr(p_GX, p_sum_other_means, p_sum_in_out, input);
+        ssr = FE_info.compute_2_fe_ssr(p_GX, p_sum_other_means, p_sum_in_out, input, output);
       } else {
-        ssr = FE_info.compute_ssr(p_GX, input);
+        ssr = FE_info.compute_ssr(p_GX, input, output);
       }
 
       if(stopping_crit(ssr_old, ssr, diffMax)){
