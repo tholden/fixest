@@ -2143,31 +2143,30 @@ List cpp_demean(SEXP y, SEXP X_raw, SEXP r_weights, int iterMax, double diffMax,
       iterations_all[v_start + b] = iterations_batch[b];
     }
 
-    #pragma omp parallel for num_threads(nthreads) schedule(static, 1) if(nthreads > 1 && b_total >= 20000)
+    vector<double*> p_dest_batch(b_vars, nullptr);
     for(int b=0 ; b<b_vars ; ++b){
       int v = v_start + b;
-      RealVec p_input_tmp = p_input_batch[b];
-      double *p_output_tmp = p_output_batch[b];
-
       if(v < n_vars_X){
-        double *p_x_col = &X_demean(0, v);
-        for(int i=0 ; i < n_obs ; ++i){
-          p_x_col[i] = p_input_tmp[i] - p_output_tmp[i];
-        }
+        p_dest_batch[b] = &X_demean(0, v);
       } else if(useY){
         int vy = v - n_vars_X;
         if(is_y_list){
-          NumericVector y_demean_tmp = y_demean_list[vy];
-          double *p_y_col = REAL(y_demean_tmp);
-          for(int i=0 ; i < n_obs ; ++i){
-            p_y_col[i] = p_input_tmp[i] - p_output_tmp[i];
-          }
+          SEXP y_demean_tmp = VECTOR_ELT(y_demean_list, vy);
+          p_dest_batch[b] = REAL(y_demean_tmp);
         } else {
-          double *p_y_col = REAL(y_demean_vec);
-          for(int i=0 ; i < n_obs ; ++i){
-            p_y_col[i] = p_input_tmp[i] - p_output_tmp[i];
-          }
+          p_dest_batch[b] = REAL(y_demean_vec);
         }
+      }
+    }
+
+    #pragma omp parallel for num_threads(nthreads) schedule(static, 1) if(nthreads > 1 && b_total >= 20000)
+    for(int b=0 ; b<b_vars ; ++b){
+      double *p_dest = p_dest_batch[b];
+      if(p_dest == nullptr) continue;
+      RealVec p_input_tmp = p_input_batch[b];
+      double *p_output_tmp = p_output_batch[b];
+      for(int i=0 ; i < n_obs ; ++i){
+        p_dest[i] = p_input_tmp[i] - p_output_tmp[i];
       }
     }
   }
