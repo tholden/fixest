@@ -3683,6 +3683,14 @@ v_3way_small = vcov(est_vc, cluster = ~c1 + c2 + c3)
 v_3way_big   = vcov(est_vc, cluster = ~big1 + big2 + big3)
 test(max(abs(v_3way_small - v_3way_big)) < 1e-12, TRUE)
 
+# Multi-threaded matprod_XtX / matprod_Xty with many regressors matches lm()
+df_k14 = as.data.frame(matrix(rnorm(n_vc * 15), n_vc, 15))
+names(df_k14) = c("y", paste0("x", 1:14))
+fml_k14 = as.formula(paste("y ~ 0 +", paste0("x", 1:14, collapse = " + ")))
+est_k14 = feols(fml_k14, df_k14, vcov = "iid")
+lm_k14  = lm(fml_k14, df_k14)
+test(max(abs(coef(est_k14) - coef(lm_k14))) < 1e-12, TRUE)
+
 
 ####
 #### Weighted demeaning convergence & scale invariance ####

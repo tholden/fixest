@@ -380,12 +380,15 @@ void matprod_XtX(NumericMatrix &XtX, const NumericMatrix &X,
       }
     }
 
+    const double *pX = REAL(X);
+    const double *pwX = REAL(wX);
+
     #pragma omp parallel for num_threads(nthreads) schedule(static, 1)
     for(int index=0 ; index<nValues ; ++index){
       int k_row = all_i[index];
       int k_col = all_j[index];
-      const double *px_row = REAL(X) + static_cast<size_t>(k_row) * N;
-      const double *pwx_col = REAL(wX) + static_cast<size_t>(k_col) * N;
+      const double *px_row = pX + static_cast<size_t>(k_row) * N;
+      const double *pwx_col = pwX + static_cast<size_t>(k_col) * N;
 
       double val = 0;
       #pragma omp simd reduction(+:val)
@@ -417,9 +420,11 @@ void matprod_Xty(NumericVector &Xty, const NumericMatrix &X, const double *y, in
     Xty[0] = value;
     
   } else  {
+    const double *pX = REAL(X);
+
     #pragma omp parallel for num_threads(nthreads)
     for(int j=0 ; j<K ; ++j){
-      const double *px_col = REAL(X) + static_cast<size_t>(j) * N;
+      const double *px_col = pX + static_cast<size_t>(j) * N;
       double val = 0;
       #pragma omp simd reduction(+:val)
       for(int i=0 ; i<N ; ++i){
