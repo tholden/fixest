@@ -2015,6 +2015,17 @@ test(c3, m_fe[["fe_bis[[x2]]"]][names(c3)], "~", tol = 2e-4)
 c4  = get_coef(all_coef, "fe_bis::(?=.+x3)|:x3")
 test(c4, m_fe[["fe_bis[[x3]]"]][names(c4)], "~", tol = 2e-4)
 
+# https://github.com/lrberge/fixest/issues/674
+# labels made only of digits keep their text ("00001") and are still sorted as numbers
+base_zeros = data.frame(y = base$y, unit = sprintf("%05d", c(1:9, 10, 1:9, 10)[base$fe_bis]))
+m_zeros = feols(y ~ 1 | unit, base_zeros)
+test(names(fixef(m_zeros)$unit), sprintf("%05d", sort(unique(base$fe_bis))))
+test(names(fixef(m_zeros, sorted = FALSE)$unit) %in% base_zeros$unit, rep(TRUE, 10))
+# so the fixed-effect columns of sparse_model_matrix are filled: one 1 per row
+test(sum(sparse_model_matrix(m_zeros, data = base_zeros, type = "fixef")), nrow(base_zeros))
+# numeric fixed effects are unaffected
+test(names(fixef(feols(y ~ 1 | fe_bis, base))$fe_bis), as.character(sort(unique(base$fe_bis))))
+
 
 ####
 #### To Integer ####
@@ -2258,6 +2269,74 @@ test(hatvalues(est_pii_singular)[1], 1.0)
 # with observation removal
 est_pii_singleton = feols(y ~ x1 | species, base, fixef.rm = "singleton")
 test(length(hatvalues(est_pii_singleton)), nrow(base) - 1)
+
+# weights must be reflected in the hat values (fast path)
+base = setNames(iris, c("y", "x1", "x2", "x3", "species"))
+base$y_int = as.integer(base$y)
+base$w = 1 + (seq_len(nrow(base)) %% 3)
+ffm_w = feols(y ~ x1 + x2, weights = ~w, base)
+fm_w  = lm(y ~ x1 + x2, weights = w, base)
+test(hatvalues(ffm_w), hatvalues(fm_w))
+
+# the dispersion must be divided out, both with and without fixed effects
+feglm_q = feglm(y_int ~ x1 + x2, base, quasipoisson())
+glm_q   = glm(y_int ~ x1 + x2, family = quasipoisson(), base)
+test(hatvalues(feglm_q), hatvalues(glm_q))
+
+feglm_q_fe = feglm(y_int ~ x1 + x2 | species, base, quasipoisson())
+glm_q_fe   = glm(y_int ~ x1 + x2 + factor(species), family = quasipoisson(), base)
+test(hatvalues(feglm_q_fe), hatvalues(glm_q_fe), tol = 1e-7)
+
+
+####
+#### cooks.distance ####
+####
+
+chunk("COOKS DISTANCE")
+
+base = setNames(iris, c("y", "x1", "x2", "x3", "species"))
+base$y_int = as.integer(base$y)
+base$y_bin = 1 * (base$y > mean(base$y))
+base$w = 1 + (seq_len(nrow(base)) %% 3)
+
+fm  = lm(y ~ x1 + x2, base)
+ffm = feols(y ~ x1 + x2, base)
+test(cooks.distance(ffm), cooks.distance(fm))
+test(length(cooks.distance(ffm)), nobs(ffm))
+
+glm_poi   = glm(y_int ~ x1 + x2, family = poisson(), base)
+feglm_poi = fepois(y_int ~ x1 + x2, base)
+test(cooks.distance(feglm_poi), cooks.distance(glm_poi))
+
+glm_logit   = glm(y_bin ~ x1 + x2, family = binomial(), base)
+feglm_logit = feglm(y_bin ~ x1 + x2, base, binomial())
+test(cooks.distance(feglm_logit), cooks.distance(glm_logit))
+
+# with fixed effects
+fm_fe  = lm(y ~ x1 + x2 + factor(species), base)
+ffm_fe = feols(y ~ x1 + x2 | species, base)
+test(cooks.distance(ffm_fe), cooks.distance(fm_fe))
+
+glm_fe   = glm(y_int ~ x1 + x2 + factor(species), family = poisson(), base)
+feglm_fe = fepois(y_int ~ x1 + x2 | species, base)
+test(cooks.distance(feglm_fe), cooks.distance(glm_fe), tol = 1e-7)
+
+# arguments are passed on to hatvalues()
+set.seed(1)
+test(length(cooks.distance(ffm_fe, exact = FALSE, boot.size = 100)), nobs(ffm_fe))
+
+# weighted OLS and quasi-family GLM
+test(cooks.distance(feols(y ~ x1 + x2, weights = ~w, base)),
+     cooks.distance(lm(y ~ x1 + x2, weights = w, base)))
+
+test(cooks.distance(feglm(y_int ~ x1 + x2, base, quasipoisson())),
+     cooks.distance(glm(y_int ~ x1 + x2, family = quasipoisson(), base)), tol = 1e-5)
+
+# leverage of 1 leads to NaN (matching stats::cooks.distance)
+base$species = as.character(base$species)
+base[1, "species"] = "foo"
+est_pii_singular = feols(y ~ x1 | species, base, fixef.rm = "none")
+test(is.nan(cooks.distance(est_pii_singular)[1]), TRUE)
 
 
 
@@ -2890,6 +2969,21 @@ test_col_names(feols(mpg ~ factor(am):factor(cyl) + disp | vs, mtcars, notes = F
 test_col_names(feols(mpg ~ factor(am):hp + disp | vs, mtcars))
 test_col_names(feols(mpg ~ poly(hp, degree = 2) + disp | vs, mtcars))
 
+# Allow NA in factor variable
+d <- data.frame(y = 1:3, g = factor(c("a", NA, "b")))
+m <- fixest::sparse_model_matrix(y ~ factor(g), d)
+test(all(is.na(m[2, c("factor(g)a", "factor(g)b")])), TRUE)
+m <- fixest::sparse_model_matrix(y ~ i(g), d)
+test(colnames(m), c("(Intercept)", "g::b"))
+test(is.na(m[2, "g::b"]), TRUE)
+test(m[c(1, 3), "g::b"], c(0, 1))
+# Without an intercept, both levels remain and must preserve the missing row.
+m <- fixest::sparse_model_matrix(y ~ 0 + i(g), d)
+test(colnames(m), c("g::a", "g::b"))
+test(all(is.na(m[2, c("g::a", "g::b")])), TRUE)
+m2 <- fixest::sparse_model_matrix(y ~ g, d, na.rm = TRUE)
+test(nrow(m2), 2L)
+
 
 ####
 #### update ####
@@ -3067,6 +3161,14 @@ test(formula(est, fml.update = . ~ . + I(x1^2)),
 test(formula(est, fml.update = . ~ . + I(x1^2) | 0 | 0), 
      y ~ x1 + I(x1^2))
 
+# a user-supplied I(x^2) must not be wrapped again into I(I(x^2))
+test(fixest:::fixest_fml_rewriter(y ~ I(x1^2))$fml, y ~ I(x1^2))
+test(fixest:::fixest_fml_rewriter(y ~ I(x1^2) + x1^3)$fml, y ~ I(x1^2) + I(x1^3))
+# ... while lags inside I() are still expanded
+test(deparse(fixest:::fixest_fml_rewriter(y ~ I(l(x1, 1:2)))$fml), 
+     "y ~ I(l(x1, 1) + l(x1, 2))")
+test(names(coef(feols(y ~ I(x1^2), base))), c("(Intercept)", "I(x1^2)"))
+
 # build
 test(formula(est, fml.build = . ~ .endo + .inst), y ~ x2 + x3)
 
@@ -3095,12 +3197,139 @@ test(c(length(est_iv$iv_first_stage), est_iv$iv_n_inst), c(2, 2)) # kpr relies o
 est_iv_uneven = feols(y ~ x1 | x_endo_1 ~ x_inst_1 + x_inst_2, base, cluster = "cl_var")
 fitstat(est_iv_uneven, ~ f + ivf + ivf2 + wald + ivwald + ivwald2 + wh + sargan + kpr + rmse + g + n + ll + sq.cor + r2)
 
+# Clustered KP scores need not have the same number of columns as coefficients (#651)
+data(fulton)
+# Manual verification: 
+# haven::write_dta(fulton, "/tmp/kp_fulton.dta")
+# Stata: 
+# use "/tmp/kp_fulton.dta", clear
+# qui ivreg2 qty (price wave3 = speed2 wave2), cluster(day)
+#        disp %21.14f e(rkf)
+est_kp = feols(qty ~ 1 | price + wave3 ~ speed2 + wave2, fulton, cluster = "day")
+test(fitstat(est_kp, "kpr")$kpr$stat, 1.41464542781431, tol = 1e-9)
+
+# Stata: 
+# qui ivreg2 qty (price = speed2 wave2), cluster(day)
+# disp %21.14f e(rkf)
+est_kp_one = feols(qty ~ 1 | price ~ speed2 + wave2, fulton, cluster = "day")
+test(fitstat(est_kp_one, "kpr")$kpr$stat, 26.19684898146063, tol = 1e-9)
+# Stata: 
+# qui ivreg2 qty (price wave3 = speed2 wave2 speed3), cluster(day)
+# disp %21.14f e(rkf)
+est_kp_two = feols(
+  qty ~ 1 | price + wave3 ~ speed2 + wave2 + speed3,
+  fulton,
+  cluster = "day"
+)
+test(fitstat(est_kp_two, "kpr")$kpr$stat, 6.60545317405999, tol = 1e-9)
+# Stata: 
+# qui ivreg2 qty (price = speed2 wave2), robust
+# disp %21.14f e(rkf)
+test(
+  fitstat(summary(est_kp_one, vcov = "hetero"), "kpr")$kpr$stat,
+  19.98369024505745,
+  tol = 1e-9
+)
+# Stata: 
+# qui ivreg2 qty (price wave3 = speed2 wave2 speed3), robust
+# disp %21.14f e(rkf)
+test(
+  fitstat(summary(est_kp_two, vcov = "hetero"), "kpr")$kpr$stat,
+  7.20571373363488,
+  tol = 1e-9
+)
+
+# With one endogenous regressor, KP equals the first-stage joint Wald F.
+test(
+  # Stata: 
+  # qui ivreg2 qty (price = speed2 wave2), cluster(day)
+  # disp %21.14f e(rkf)
+  fitstat(est_kp_one, "kpr")$kpr$stat,
+  # Stata: 
+  # qui regress price speed2 wave2, vce(cluster day)
+  # qui test speed2 wave2
+  # disp %21.14f r(F)
+  fitstat(est_kp_one, "ivwald1")$ivwald1$stat,
+  tol = 1e-9
+)
+
+# Three endogenous regressors catch transposed right singular vectors.
+set.seed(987)
+kp_z = matrix(rnorm(400 * 4), 400)
+kp_x = kp_z %*% matrix(rnorm(12), 4) + matrix(rnorm(400 * 3), 400)
+base_kp = data.frame(
+  y = rnorm(400),
+  x1 = kp_x[, 1],
+  x2 = kp_x[, 2],
+  x3 = kp_x[, 3],
+  z1 = kp_z[, 1],
+  z2 = kp_z[, 2],
+  z3 = kp_z[, 3],
+  z4 = kp_z[, 4],
+  g = rep(1:40, each = 10)
+)
+# Manual verification: 
+# haven::write_dta(base_kp, "/tmp/kp_synthetic.dta")
+# Stata: 
+# use "/tmp/kp_synthetic.dta", clear
+# qui ivreg2 y (x1 x2 x3 = z1 z2 z3 z4), cluster(g)
+# disp %21.14f e(rkf)
+est_kp_three = feols(
+  y ~ 1 | x1 + x2 + x3 ~ z1 + z2 + z3 + z4,
+  base_kp,
+  cluster = "g"
+)
+test(fitstat(est_kp_three, "kpr")$kpr$stat, 145.64134814824516, tol = 1e-9)
+test(
+  # Stata: 
+  # qui ivreg2 y (x1 x2 x3 = z1 z2 z3 z4), robust
+  # disp %21.14f e(rkf)
+  fitstat(summary(est_kp_three, vcov = "hetero"), "kpr")$kpr$stat,
+  165.60366289016238,
+  tol = 1e-9
+)
+
+# Too few clusters for the projected covariance should warn, rather than error.
+base_kp$g_small = rep(1:2, each = 200)
+est_kp_singular = update(est_kp_three, data = base_kp, cluster = "g_small")
+test(
+  fitstat(est_kp_singular, "kpr"),
+  "projected covariance matrix is singular",
+  "warn"
+)
+test(is.na(suppressWarnings(fitstat(est_kp_singular, "kpr"))$kpr$stat), TRUE)
+
+# Sargan with weights: n * R2 of the weighted regression of the 2SLS residuals
+# on the instruments, with the total sum of squares weighted as well
+base$w_sargan = rep(c(0.5, 1, 2), length.out = nrow(base))
+est_iv_w = feols(y ~ x1 | x_endo_1 ~ x_inst_1 + x_inst_2, base, weights = ~w_sargan)
+u = resid(est_iv_w)
+aux = lm(u ~ x1 + x_inst_1 + x_inst_2, base, weights = w_sargan)
+u_bar = weighted.mean(u, base$w_sargan)
+sargan_w = nrow(base) * (1 - sum(base$w_sargan * resid(aux)^2) / sum(base$w_sargan * (u - u_bar)^2))
+test(fitstat(est_iv_w, "sargan")$sargan$stat, sargan_w)
+# with constant weights, the weighted Sargan equals the unweighted one
+base$w_const = 2
+test(fitstat(feols(y ~ x1 | x_endo_1 ~ x_inst_1 + x_inst_2, base, weights = ~w_const), "sargan")$sargan$stat,
+     fitstat(feols(y ~ x1 | x_endo_1 ~ x_inst_1 + x_inst_2, base), "sargan")$sargan$stat)
+
 est_fe = feols(y ~ x1 | fe, base)
 fitstat(est_fe, ~ wf)
 
 # https://github.com/lrberge/fixest/issues/584
 est_weighted = feols(y ~ x1 | fe, base, weights = ~w)
 fitstat(est_weighted, ~ rmse)
+
+# https://github.com/lrberge/fixest/issues/675
+# the second-stage IV R2 uses the second-stage residuals, weighted like ssr_null
+est_iv_w = feols(y ~ x1 | x_endo_1 ~ x_inst_1, base, weights = ~w)
+y_bar_w = weighted.mean(base$y, base$w)
+r2_w = 1 - sum(base$w * est_iv_w$iv_residuals^2) / sum(base$w * (base$y - y_bar_w)^2)
+test(r2(est_iv_w, "r2"), r2_w)
+# with constant weights, the weighted R2 equals the unweighted one
+base$w_const = 2
+test(r2(feols(y ~ x1 | x_endo_1 ~ x_inst_1, base, weights = ~w_const), "r2"),
+     r2(feols(y ~ x1 | x_endo_1 ~ x_inst_1, base), "r2"))
 
 # fitstat works with `split` and `lean` (https://github.com/lrberge/fixest/issues/566)
 est_split = feols(y ~ x1, base, fsplit = ~fe)
@@ -3355,27 +3584,6 @@ test(as.numeric(lm(y ~ 0 + x1, dm_vs)$coefficients), as.numeric(coef(est_vs)))
 
 
 ####
-#### demean column batching ####
-####
-
-chunk("demean column batching")
-
-base_batch = setNames(iris, c("y1", "x1", "x2", "x3", "species"))
-base_batch$y2 = base_batch$y1 * 0.5 + base_batch$x1
-base_batch$fe2 = rep(1:10, 15)
-
-est_unbatched = feols(c(y1, y2) ~ x1 + x2 + I(x1 * x2) | species[x3] + fe2, base_batch)
-old_opt = getOption("fixest_demean_mem_gb")
-options(fixest_demean_mem_gb = 1e-9)
-est_batched = feols(c(y1, y2) ~ x1 + x2 + I(x1 * x2) | species[x3] + fe2, base_batch)
-options(fixest_demean_mem_gb = old_opt)
-
-test(unlist(coef(est_batched)), unlist(coef(est_unbatched)))
-test(unlist(se(est_batched)), unlist(se(est_unbatched)))
-test(est_batched[[1]]$iterations, est_unbatched[[1]]$iterations)
-
-
-####
 #### multi-LHS mem.clean ####
 ####
 
@@ -3569,10 +3777,6 @@ df_p = data.frame(y = py, x = px, g1 = factor(p1), g2 = factor(p2), g3 = factor(
 fp_w = fepois(y ~ x | g1 + g2 + g3, data = df_p, weights = ~w, fixef.rm = "none")
 gp_w = glm(y ~ x + g1 + g2 + g3, data = df_p, weights = w, family = poisson())
 test(abs(coef(fp_w)["x"] - coef(gp_w)["x"]) < 1e-10, TRUE)
-
-
-
-
 
 
 

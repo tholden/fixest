@@ -5,6 +5,8 @@
 
 - fix 32-bit integer overflows and excessive intermediate allocations in large-$N$ multi-way clustered VCOVs (`vcovClust`, `cpp_tapply_sum`, `matprod_XtX`/`matprod_Xty`, `sparse_check`, and `to_index_internal`).
 
+- Improvements for the Kleibergen-Paap statistic: corrected IID covariance normalization, allow estimation weights, support robust and clustered IV models with more instruments than endogenous regressors, and corrected first-stage small sample adjustments and Wald rank-test p-values.
+
 - fix bug in vcov(): following v0.14.0, the returned object was a matrix of class `fixest_vcov` -- which led to problem for matrix operations as it didn't inherit the matrix class. Now fixed, thanks to @strengejacke, #652.
 
 - fix bug in `xpd`: variable completion with `..` suffix now works when after an underscore (e.g. `xpd(~var_.., data = data.frame(var_1=1, var_2=2))`)
@@ -13,6 +15,8 @@
 
 - ensure the code is compatible with dreamerr v1.4.0 (could lead to rare but undecipherable bugs). Reported by @MichaelChirico, #668.
 
+- fix bug in `hatvalues.fixest`: weights were not accounted for in models without fixed-effects, and the dispersion was not divided out for quasi-family GLMs. This also affected the HC2/HC3 VCOVs.
+
 ## Vignettes
 
 - consolidate the two `etable` vignettes (`exporting_tables` and `etable_new_features`) into a single document. By GMD, #648.
@@ -20,6 +24,10 @@
 - add theory to the VCOV vignette, plus many other changes. By Kyle Butts.
 
 - new cheat sheet vignette containing quick reference tables
+
+## New features
+
+- new method `cooks.distance.fixest`, which computes Cook's distance for `feols` and `feglm` estimations using `hatvalues`.
 
 ## Other
 

@@ -1363,8 +1363,9 @@ fixef.fixest = function(object, notes = getFixest_notes(), sorted = TRUE,
     fn = attr(fixef_id[[i]], "fixef_names")
 
     if(sorted){
-      if(all(!grepl("[^[:digit:]]", fn))) fn = as.numeric(fn)
-      my_order = order(fn)
+      # Labels made only of digits are sorted as numbers, but they keep their
+      # original text: "00001" must stay "00001" so it still matches the data (#674).
+      my_order = if(all(!grepl("[^[:digit:]]", fn))) order(as.numeric(fn)) else order(fn)
 
       cv = fixef_values[[i]][my_order]
       names(cv) = fn[my_order]
@@ -2894,10 +2895,32 @@ predict.fixest = function(object, newdata, type = c("response", "link"), se.fit 
 
   coef = object$coefficients
 
+  # For IV models, the prediction is X \beta (not the first-stage projections)
+  is_iv = isTRUE(object$is_iv) && identical(object$iv_stage, 2)
+
+  if(is_iv){
+    # Only the endogenous coefficients are renamed (an exogenous variable
+    # could legitimately be named 'fit_something')
+    qui = match(object$iv_endo_names_fit, names(coef))
+    qui = qui[!is.na(qui)]
+    names(coef)[qui] = sub("^fit_", "", names(coef)[qui])
+  }
+
   value_linear = 0
   var_keep = NULL
   rhs_fml = fml_split(fml, 1)
   linear.varnames = all_vars_with_i_prefix(rhs_fml[[3]])
+
+  if(is_iv){
+    # The endogenous regressors must be included in the linear part,
+    # even when the model has no exogenous regressors
+    iv_fml = object$fml_all$iv
+    rhs_fml = .xpd(..lhs ~ ..endo + ..rhs, 
+                   ..lhs = rhs_fml[[2]], 
+                   ..endo = iv_fml[[2]], 
+                   ..rhs = rhs_fml[[3]])
+    linear.varnames = all_vars_with_i_prefix(rhs_fml[[3]])
+  }
   
   if(length(linear.varnames) == 0 && "(Intercept)" %in% names(coef)){
     # we need a specific branch
@@ -2905,16 +2928,6 @@ predict.fixest = function(object, newdata, type = c("response", "link"), se.fit 
     
   } else if(length(linear.varnames) > 0){
     # Checking all variables are there
-
-    if(isTRUE(object$is_iv) && object$iv_stage == 2){
-      names(coef) = gsub("^fit_", "", names(coef))
-      linear.varnames = c(linear.varnames, all_vars_with_i_prefix(object$fml_all$iv[[2]]))
-      iv_fml = object$fml_all$iv
-      rhs_fml = .xpd(..lhs ~ ..endo + ..rhs, 
-                     ..lhs = rhs_fml[[2]], 
-                     ..endo = iv_fml[[2]], 
-                     ..rhs = rhs_fml[[3]])
-    }
 
     varNotHere = setdiff(linear.varnames, names(newdata))
     if(length(varNotHere) > 0){
@@ -3054,6 +3067,14 @@ predict.fixest = function(object, newdata, type = c("response", "link"), se.fit 
     # The matrix has been created already
 
     V_raw = vcov(object, attr = TRUE, vcov = vcov, ssc = ssc)
+
+    if(is_iv && !is.null(rownames(V_raw))){
+      # Align the vcov names with the renamed endogenous coefficients
+      qui = match(object$iv_endo_names_fit, rownames(V_raw))
+      qui = qui[!is.na(qui)]
+      rownames(V_raw)[qui] = colnames(V_raw)[qui] = sub("^fit_", "", rownames(V_raw)[qui])
+    }
+
     V = V_raw[var_keep, var_keep, drop = FALSE]
     X = matrix_linear[, var_keep, drop = FALSE]
 
@@ -3913,13 +3934,17 @@ model.matrix.fixest = function(object, data = NULL, type = "rhs", sample = "esti
       fml = fml, fake_intercept = fake_intercept,
       subset = subset),
       "In 'model.matrix', the RHS could not be evaluated: ")
+    # Return NULL when there are no linear columns
+    if(length(linear.mat) == 0 || is.null(dim(linear.mat))){
+      linear.mat = NULL
+    }
     
-    if(!is.null(object$rm_variable)){
+    if(!is.null(linear.mat) && !is.null(object$rm_variable)){
       qui = which(colnames(linear.mat) %in% object$rm_variable)
       linear.mat = linear.mat[, -qui, drop = FALSE]
     }
 
-    if(collin.rm){
+    if(collin.rm && !is.null(linear.mat)){
       qui = which(colnames(linear.mat) %in% object$collin.var)
       if(length(qui) == ncol(linear.mat)){
         linear.mat = NULL
@@ -3928,7 +3953,7 @@ model.matrix.fixest = function(object, data = NULL, type = "rhs", sample = "esti
       }
 
       coefs = object$coefficients
-      if(length(coefs) == ncol(linear.mat) && any(colnames(linear.mat) != names(coefs))){
+      if(!is.null(linear.mat) && length(coefs) == ncol(linear.mat) && any(colnames(linear.mat) != names(coefs))){
         # we reorder the matrix
         # This can happen in multiple estimations, where we respect the
         # order of the user
@@ -4014,7 +4039,9 @@ model.matrix.fixest = function(object, data = NULL, type = "rhs", sample = "esti
                                                      original_data = is_original_data, fml = fml, fake_intercept = fake_intercept), 
                            "In 'model.matrix', the instruments could not be evaluated: ")
 
-    if(is.atomic(exo.mat) && length(exo.mat) == 1){
+    if(length(exo.mat) == 0){
+      exo.mat = NULL
+    } else if(is.atomic(exo.mat) && length(exo.mat) == 1){
       # This is the intercept only
       # Two cases:
       is_int = attr(terms(fml), "intercept")
@@ -4418,12 +4445,18 @@ hatvalues.fixest = function(model, exact = TRUE, boot.size = 1000, ...){
   if (is.null(model$fixef_id)) {
     if(method == "feols"){
       X = model.matrix(model)
+      if (!is.null(model$weights)){
+        X = X * sqrt(model$weights)
+      }
   
       res = cpp_diag_XUtX(X, model$cov.iid / model$sigma2)
   
     } else if(method == "feglm"){
       XW = model.matrix(model) * sqrt(model$irls_weights)
-      res = cpp_diag_XUtX(XW, model$cov.iid)
+      # cov.iid is scaled by the dispersion (only relevant for quasi families)
+      disp = model$dispersion
+      if (is.null(disp)) disp = 1
+      res = cpp_diag_XUtX(XW, model$cov.iid / disp)
   
     } else {
       # we never get here
@@ -4540,7 +4573,16 @@ hatvalues.fixest = function(model, exact = TRUE, boot.size = 1000, ...){
 
     if (!is.null(mats$rhs)) {
       tXXinv = model$cov.iid 
-      if (method == "feols") tXXinv = tXXinv / model$sigma2
+      if (method == "feols") {
+        tXXinv = tXXinv / model$sigma2
+      } else {
+        # cov.iid is scaled by the dispersion (only relevant for quasi families).
+        # This must be undone here: only the RHS component of the projection
+        # matrix is dispersion-scaled, not the FE/slope components.
+        disp = model$dispersion
+        if (is.null(disp)) disp = 1
+        tXXinv = tXXinv / disp
+      }
 
       P_ii_list$rhs = Matrix::rowSums(
         mats$rhs * Matrix::t(tXXinv %*% Matrix::t(mats$rhs))
@@ -4595,6 +4637,71 @@ hatvalues.fixest = function(model, exact = TRUE, boot.size = 1000, ...){
   P_ii = Reduce("+", P_ii_list)
 
   P_ii
+}
+
+
+#' Cook's distance for `fixest` objects
+#'
+#' Computes Cook's distance for [`feols`] or [`feglm`] estimations, using the
+#' hat values returned by [`hatvalues.fixest`].
+#'
+#' @param model A fixest object. For instance from [`feols`] or [`feglm`].
+#' @param exact Logical scalar, default is `TRUE`. Passed to [`hatvalues`]: whether
+#'   the hat values are calculated exactly. If `FALSE`, the JLA approximation is used.
+#' @param boot.size Integer scalar or `NULL`, default is 1000. Passed to [`hatvalues`]
+#'   when `exact = FALSE`.
+#' @param ... Not currently used.
+#'
+#' @details
+#' For observation \eqn{i}, Cook's distance is computed as
+#' \deqn{D_i = \frac{r_i^2}{p s^2} \times \frac{h_{ii}}{(1 - h_{ii})^2},}
+#' where \eqn{r_i} is the residual (weighted residuals for OLS, Pearson residuals for
+#' GLM), \eqn{h_{ii}} the hat value, \eqn{p} the number of estimated coefficients
+#' (including fixed effects), and \eqn{s^2} the residual variance (the dispersion
+#' parameter for GLMs).
+#'
+#' @references
+#' Cook, R. D. (1977). Detection of influential observation in linear regression.
+#' *Technometrics*, 19(1), 15-18.
+#'
+#' @return
+#' Returns a numeric vector of the same length as the number of observations used in the estimation.
+#'
+#' @seealso [`hatvalues.fixest`], [`resid.fixest`]
+#'
+#' @examples
+#'
+#' est = feols(Petal.Length ~ Petal.Width + Sepal.Width, iris)
+#' head(cooks.distance(est))
+#'
+cooks.distance.fixest = function(model, exact = TRUE, boot.size = 1000, ...){
+  # hatvalues() handles all the guards: lean objects, IV models, and unsupported
+  # estimation types (it errors for each of them).
+  h = hatvalues(model, exact = exact, boot.size = boot.size)
+
+  method = model$method_type
+  if (method == "feols") {
+    # OLS: weighted residuals, with sigma^2 playing the role of the dispersion
+    res = residuals(model, type = "pearson")
+    s2 = model$sigma2
+
+  } else if (method == "feglm") {
+    # GLM: Pearson residuals, divided by the dispersion
+    res = residuals(model, type = "pearson")
+    s2 = model$dispersion
+    if (is.null(s2)) s2 = 1
+
+  } else {
+    # we never get here (hatvalues() rejects other methods)
+    stop("'cooks.distance' is currently not implemented for function ", model$method, ".")
+  }
+
+  p = model$nparams
+
+  D = (res / (1 - h))^2 * h / (p * s2)
+  D[is.infinite(D)] = NaN
+
+  D
 }
 
 
